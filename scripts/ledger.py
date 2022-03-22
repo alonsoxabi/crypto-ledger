@@ -1,9 +1,11 @@
 import pandas as pd
 import os
+import dateparser
 from binance.client import Client
 from binance.helpers import date_to_milliseconds
 from kucoin.client import Market
 from datetime import datetime
+from pycoingecko import CoinGeckoAPI
 
 
 def get_days_between_dates(date1: str, date2: str) -> float:
@@ -13,17 +15,21 @@ def get_days_between_dates(date1: str, date2: str) -> float:
 
 class PriceFeed:
     FALLBACK_CURRENCY = {'binance': 'BUSD',
-                         'kucoin': 'USDT'}
+                         'kucoin': 'USDT',
+                         'coingecko': 'EUR'}
 
     def __init__(self):
         self.clients = {'binance': Client(),
-                        'kucoin': Market(url='https://api.kucoin.com')}
+                        'kucoin': Market(url='https://api.kucoin.com'),
+                        'coingecko': CoinGeckoAPI()}
         exchange_info_binance = self.clients['binance'].get_exchange_info()
         exchange_info_kucoin = self.clients['kucoin'].get_symbol_list()
         self.symbols = {'binance': [s['symbol'] for s in exchange_info_binance['symbols']],
-                        'kucoin': [s['symbol'] for s in exchange_info_kucoin]}
+                        'kucoin': [s['symbol'] for s in exchange_info_kucoin],
+                        'coingecko': ['anchorust-EUR']}
         self.symbol_delimiter = {'binance': '',
-                                 'kucoin': '-'}
+                                 'kucoin': '-',
+                                 'coingecko': '-'}
 
     def get_change_factor(self, asset: str, currency: str, date: str = None, die_on_failure: bool = True,
                           force_provider: str = None) -> float:
@@ -62,29 +68,46 @@ class PriceFeed:
     def get_historical_symbol_price(self, provider: str, symbol: str, date: str) -> float:
         date_ms = date_to_milliseconds(date)
         start_date_ms = date_ms - 60000
+        kline = None
+        price = None
         if provider == "binance":
             kline = self.clients[provider].get_historical_klines(symbol, Client.KLINE_INTERVAL_1MINUTE, start_date_ms,
                                                                  date_ms)
         elif provider == "kucoin":
             kline = self.clients[provider].get_kline(symbol, '1min', startAt=start_date_ms // 1000,
                                                      endAt=date_ms // 1000)
+        elif provider == "coingecko":
+            parsed_date = dateparser.parse(date, settings={'TIMEZONE': "UTC"})
+            price = self.clients[provider].get_coin_history_by_id(id=symbol.split(self.symbol_delimiter[provider])[0],
+                                                                  date=parsed_date.date().strftime("%d-%m-%Y"))
+            price = price['market_data']['current_price'][symbol.split(self.symbol_delimiter[provider])[1].lower()]
+
         else:
             raise KeyError("Unknown provider {}!".format(provider))
         if kline:
             return float(kline[0][1])
+        elif price:
+            return float(price)
         else:
             raise ValueError(
                 "API call to {} did not return any values for symbol {} and date {}.".format(provider, symbol, date))
 
     def get_current_symbol_price(self, provider: str, symbol: str) -> float:
+        symbol_overview = None
+        price = None
         if provider == "binance":
             symbol_overview = self.clients[provider].get_symbol_ticker(symbol=symbol)
         elif provider == "kucoin":
             symbol_overview = self.clients[provider].get_ticker(symbol)
+        elif provider == "coingecko":
+            price = self.clients[provider].get_price(ids=symbol.split(self.symbol_delimiter[provider])[0],
+                                                     vs_currencies=symbol.split(self.symbol_delimiter[provider])[1])
         else:
             raise KeyError("Unknown provider {}!".format(provider))
         if symbol_overview:
             return float(symbol_overview["price"])
+        elif price:
+            return float(price[symbol.split(self.symbol_delimiter[provider])[0].lower()][symbol.split(self.symbol_delimiter[provider])[1].lower()])
         else:
             raise ValueError("API call to {} did not return any values for symbol {}.".format(provider, symbol))
 
@@ -327,8 +350,8 @@ class LedgerContainer:
 
 if __name__ == "__main__":
     his = r'/Users/peterpanda/Repos/crypto-ledger/exports'
-    asset_list = ['USDT', 'BUSD', 'ERG', 'ETH', 'BTC', 'HBAR', 'LINK', 'SOL', 'KSM', 'DOT', 'ALGO', 'UST', 'RUNE',
-                  'CKB', 'ADA', 'ATOM']
+    asset_list = ['anchorust', 'USDT', 'BUSD', 'ERG', 'ETH', 'BTC', 'HBAR', 'LINK', 'SOL', 'KSM', 'DOT', 'ALGO', 'UST',
+                  'RUNE', 'CKB', 'ADA', 'ATOM']
     ledgers = LedgerContainer(asset_list, his)
     ledgers.print_summary(2022)
     ledgers.summarize_sell_options(2022)
